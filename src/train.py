@@ -11,29 +11,26 @@ import torch.nn.functional as F
 from datasets import Dataset, DatasetDict
 from fire import Fire
 from loguru import logger
-from peft import get_peft_model
+from peft import get_peft_model, AdaLoraConfig
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from transformers import DataCollatorWithPadding, DefaultDataCollator
 
-from fixtures import AVAILABLE_PEFT, AVAILABLE_CLS_LOSSES, AVAILABLE_SSL_LOSSES
+from fixtures import AVAILABLE_CLS_LOSSES, AVAILABLE_SSL_LOSSES
 
 
-def _get_peft_model(peft_type: str, model_name: str) -> nn.Module:
-    assert peft_type in AVAILABLE_PEFT or peft_type == 'none', \
-        f'Not supported PEFT method {peft_type}. Available: {AVAILABLE_PEFT.keys()} and "none"'
-    # The parameters setting would probably be much more good-looking if placed in .yaml or something
+def _get_peft_model(target_r, init_r, lora_alpha, lora_dropout, model_name: str) -> nn.Module:
     base_model = EmbeddingModel(model_name)
 
-    if peft_type == 'prompt':
-        logger.warning('Prompt tuning provides very few trainable parameters.'
-                       ' The performance is likely to be suboptimal.')
-    elif peft_type == 'none':
-        logger.warning('The whole model will be tuned. This may take a while.')
-        return base_model
-
-    peft_config = AVAILABLE_PEFT[peft_type]
+    peft_config = AdaLoraConfig(
+        target_r=target_r,
+        init_r=init_r,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        bias='none',
+        target_modules=['query', 'value'],
+    )
     for param in base_model.parameters():
         param.requires_grad = False
     base_model.model = get_peft_model(base_model.model, peft_config)
@@ -207,7 +204,10 @@ def setup_embedding_train(save_dir,
                           num_authors=1000,
                           ssl_loss='triplet',
                           model_max_tokens=512,
-                          peft_type='adalora',
+                          target_r=14,
+                          init_r=20,
+                          lora_alpha=32,
+                          lora_dropout=0.1,
                           model_name='intfloat/multilingual-e5-base',
                           device_type='cuda:0',
                           train_batch_size: int = 8,
@@ -217,7 +217,7 @@ def setup_embedding_train(save_dir,
     assert ssl_loss in AVAILABLE_SSL_LOSSES, f'Not supported contrastive loss {ssl_loss}.' \
                                              f' Available: {AVAILABLE_SSL_LOSSES.keys()}'
     device = torch.device(device_type)
-    model = _get_peft_model(peft_type, model_name).to(device)
+    model = _get_peft_model(target_r, init_r, lora_alpha, lora_dropout, model_name).to(device)
     ssl_dataset = _compose_dataset(model.tokenizer, model_max_tokens, num_authors)
     ssl_loss = AVAILABLE_SSL_LOSSES[ssl_loss]()
 
@@ -226,15 +226,17 @@ def setup_embedding_train(save_dir,
     logger.info('Training has finished')
 
 
-def setup_classifier_train(num_classes,
+def setup_classifier_train(num_authors,
                            save_dir,
                            num_cls_epochs,
                            num_ssl_epochs,
-                           num_ssl_authors=1000,
                            cls_loss='arcface',
                            ssl_loss='triplet',
                            model_max_tokens=512,
-                           peft_type='adalora',
+                           target_r=14,
+                           init_r=20,
+                           lora_alpha=32,
+                           lora_dropout=0.1,
                            model_name='intfloat/multilingual-e5-base',
                            device_type='cuda:0',
                            train_batch_size: int = 8,
@@ -250,18 +252,18 @@ def setup_classifier_train(num_classes,
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     device = torch.device(device_type)
-    model = _get_peft_model(peft_type, model_name).to(device)
-    classification_dataset = _compose_dataset(model.tokenizer, model_max_tokens, num_classes)
+    model = _get_peft_model(target_r, init_r, lora_alpha, lora_dropout, model_name).to(device)
+    classification_dataset = _compose_dataset(model.tokenizer, model_max_tokens, num_authors)
     logger.info('Classification dataset created')
     cls_loss = AngularPenaltySMLoss(in_features=model.embedding_dim,
-                                    out_features=num_classes, loss_type=cls_loss).to(device)
+                                    out_features=num_authors, loss_type=cls_loss).to(device)
 
     train_classifier(model, classification_dataset, cls_loss, model.tokenizer, num_cls_epochs, save_dir,
                      train_batch_size, eval_batch_size, learning_rate, gradient_accumulation_steps, weight_decay)
     logger.info('Classification task training has finished, moving to APN training')
 
     ssl_loss = AVAILABLE_SSL_LOSSES[ssl_loss](distance_function=lambda x, y: 1.0 - F.cosine_similarity(x, y))
-    ssl_dataset = _compose_dataset(model.tokenizer, model_max_tokens, num_classes)
+    ssl_dataset = _compose_dataset(model.tokenizer, model_max_tokens, num_authors)
 
     train_embeddings(model, ssl_dataset, ssl_loss, num_ssl_epochs, save_dir, train_batch_size,
                      eval_batch_size, learning_rate, weight_decay)
