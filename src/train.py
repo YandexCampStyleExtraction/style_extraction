@@ -3,6 +3,7 @@ import os
 import random
 import sys
 
+import wandb
 import numpy as np
 import pandas as pd
 import torch
@@ -131,6 +132,9 @@ def train_classifier(model,
         accuracy = correctly_classified / (len(test_dataloader) * eval_batch_size)
         logger.info(f'Epoch={epoch + 1}/{epochs} | Train loss = {train_loss:.6f} |'
                     f' Val loss = {val_loss:.6f} | Val accuracy = {accuracy:.6f}')
+        # Maybe do the logging over batches?
+        wandb.log({"training_loss": train_loss, "validation_loss": val_loss,
+                   "validation_accuracy": accuracy}, step=epoch)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -193,6 +197,7 @@ def train_embeddings(model,
 
         train_loss, val_loss = train_loss / len(train_dataloader), val_loss / len(test_dataloader)
         logger.info(f'Epoch {epoch + 1}/{epochs} | Train loss: {train_loss:.6f} Val loss: {val_loss:.6f}')
+        wandb.log({"training_loss": train_loss, "validation_loss": val_loss}, step=epoch)
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             model.model.save_pretrained(os.path.join(save_dir, 'peft_encoder_weights'))
@@ -277,6 +282,8 @@ if __name__ == '__main__':
 
     from src.models.embedders import EmbeddingModel
     from src.models.losses import AngularPenaltySMLoss
+
+    wandb.init(project="yandex-camp-project")
 
     logger.info('Creating the experiment')
     Fire({

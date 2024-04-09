@@ -1,0 +1,23 @@
+program: src/train.py
+name: optimize_adalora_hparams
+method: bayes
+metric:
+  goal: minimize
+  name: validation_loss
+parameters:
+  learning_rate:
+    min: 0.0001
+    max: 0.01
+  target_r:
+    values: [12, 14, 16]
+  init_r:
+    values: [18, 21, 24]
+  num_ssl_epochs:
+    values: [5, 10, 15]
+
+command:
+- ${env}
+- ${interpreter}
+- ${program}
+- embedding
+- ${args_no_hyphens}
