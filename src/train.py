@@ -173,7 +173,6 @@ def train_classifier(model,
 def train_embeddings(model,
                      tokenized_dataset,
                      loss_fn,
-                     tokenizer,
                      epochs,
                      save_dir,
                      train_batch_size,
@@ -182,7 +181,7 @@ def train_embeddings(model,
                      weight_decay):
     device = next(model.parameters()).device
 
-    data_collator = DefaultDataCollator() # DataCollatorWithPadding(tokenizer=tokenizer)
+    data_collator = DefaultDataCollator()
 
     train_dataloader = DataLoader(tokenized_dataset['train'], batch_size=train_batch_size,
                                   collate_fn=data_collator, drop_last=True, pin_memory=True)
@@ -244,7 +243,6 @@ def train_embeddings(model,
             logger.info(f'Best model params saved at {save_dir}')
 
 
-
 def setup_embedding_train(save_dir,
                           num_ssl_epochs,
                           num_authors=1000,
@@ -264,7 +262,7 @@ def setup_embedding_train(save_dir,
     ssl_dataset = _compose_self_supervised_dataset(model.tokenizer, model_max_tokens, num_authors)
     ssl_loss = AVAILABLE_SSL_LOSSES[ssl_loss](distance_function=lambda x, y: 1.0 - F.cosine_similarity(x, y))
 
-    train_embeddings(model, ssl_dataset, ssl_loss, model.tokenizer, num_ssl_epochs, save_dir, train_batch_size,
+    train_embeddings(model, ssl_dataset, ssl_loss, num_ssl_epochs, save_dir, train_batch_size,
                      eval_batch_size, learning_rate, weight_decay)
     logger.info('Training has finished')
 
