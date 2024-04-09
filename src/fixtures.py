@@ -1,6 +1,6 @@
 from peft import LoraConfig, IA3Config, AdaLoraConfig, PromptTuningConfig
 
-from models.losses import ContrastiveLoss, TripletMarginWithDistanceLoss
+from models.losses import ContrastiveLoss, TripletMarginLoss
 
 AVAILABLE_PEFT = {
     'lora': LoraConfig(
@@ -31,7 +31,7 @@ AVAILABLE_PEFT = {
 
 AVAILABLE_SSL_LOSSES = {
     # 'contrastive': ContrastiveLoss,
-    'triplet': TripletMarginWithDistanceLoss
+    'triplet': TripletMarginLoss
 }
 
 AVAILABLE_CLS_LOSSES = {

@@ -44,7 +44,7 @@ def _get_peft_model(peft_type: str, model_name: str) -> nn.Module:
     return base_model
 
 
-def _compose_classification_dataset(tokenizer, model_max_tokens, num_classes):
+def _compose_dataset(tokenizer, model_max_tokens, num_classes):
     # This is just a sample for sanity checks, reformat
     def preprocess_function(examples):
         model_inputs = tokenizer(examples['text'], max_length=model_max_tokens, padding='max_length', truncation=True)
@@ -66,40 +66,40 @@ def _compose_classification_dataset(tokenizer, model_max_tokens, num_classes):
     return tokenized_dataset
 
 
-def _compose_self_supervised_dataset(tokenizer, model_max_tokens, num_authors):
-    # This is just a sample for sanity checks, reformat
-    def preprocess_function(examples):
-        model_inputs = dict()
-        anchors = tokenizer(examples['anchor'], max_length=model_max_tokens, padding='max_length', truncation=True)
-        positives = tokenizer(examples['positive'], max_length=model_max_tokens, padding='max_length', truncation=True)
-        negatives = tokenizer(examples['negative'], max_length=model_max_tokens, padding='max_length', truncation=True)
-
-        model_inputs['anchor_input_ids'] = anchors['input_ids']
-        model_inputs['anchor_attention_mask'] = anchors['attention_mask']
-
-        model_inputs['positive_input_ids'] = positives['input_ids']
-        model_inputs['positive_attention_mask'] = positives['attention_mask']
-
-        model_inputs['negative_input_ids'] = negatives['input_ids']
-        model_inputs['negative_attention_mask'] = negatives['attention_mask']
-
-        return model_inputs
-
-    anchor = ["Here at index I should be a text by some author" for _ in range(1024)]
-    positive = ["Here at index I should be a text by the same author as in anchor[i]" for _ in range(1024)]
-    negative = ["Here at index I should be a text by author != author of anchor[i]" for _ in range(1024)]
-
-    dataset_dict = {"anchor": anchor, "positive": positive, "negative": negative}
-
-    dataset = DatasetDict()
-    dataset['train'] = Dataset.from_dict(dataset_dict)
-    dataset['test'] = Dataset.from_dict(dataset_dict)
-
-    tokenized_dataset = dataset.map(preprocess_function,
-                                    batched=True,
-                                    desc='Tokenizing dataset',
-                                    remove_columns=['anchor', 'positive', 'negative'])
-    return tokenized_dataset
+# def _compose_self_supervised_dataset(tokenizer, model_max_tokens, num_authors):
+#     # This is just a sample for sanity checks, reformat
+#     def preprocess_function(examples):
+#         model_inputs = dict()
+#         anchors = tokenizer(examples['anchor'], max_length=model_max_tokens, padding='max_length', truncation=True)
+#         positives = tokenizer(examples['positive'], max_length=model_max_tokens, padding='max_length', truncation=True)
+#         negatives = tokenizer(examples['negative'], max_length=model_max_tokens, padding='max_length', truncation=True)
+#
+#         model_inputs['anchor_input_ids'] = anchors['input_ids']
+#         model_inputs['anchor_attention_mask'] = anchors['attention_mask']
+#
+#         model_inputs['positive_input_ids'] = positives['input_ids']
+#         model_inputs['positive_attention_mask'] = positives['attention_mask']
+#
+#         model_inputs['negative_input_ids'] = negatives['input_ids']
+#         model_inputs['negative_attention_mask'] = negatives['attention_mask']
+#
+#         return model_inputs
+#
+#     anchor = ["Here at index I should be a text by some author" for _ in range(1024)]
+#     positive = ["Here at index I should be a text by the same author as in anchor[i]" for _ in range(1024)]
+#     negative = ["Here at index I should be a text by author != author of anchor[i]" for _ in range(1024)]
+#
+#     dataset_dict = {"anchor": anchor, "positive": positive, "negative": negative}
+#
+#     dataset = DatasetDict()
+#     dataset['train'] = Dataset.from_dict(dataset_dict)
+#     dataset['test'] = Dataset.from_dict(dataset_dict)
+#
+#     tokenized_dataset = dataset.map(preprocess_function,
+#                                     batched=True,
+#                                     desc='Tokenizing dataset',
+#                                     remove_columns=['anchor', 'positive', 'negative'])
+#     return tokenized_dataset
 
 
 def train_classifier(model,
@@ -197,18 +197,12 @@ def train_embeddings(model,
         train_loss = 0
 
         for batch in tqdm(train_dataloader, desc='Training', leave=False):
-            anchor = {'input_ids': batch['anchor_input_ids'].to(device),
-                      'attention_mask': batch['anchor_attention_mask'].to(device)}
-            positive = {'input_ids': batch['positive_input_ids'].to(device),
-                        'attention_mask': batch['positive_attention_mask'].to(device)}
-            negative = {'input_ids': batch['negative_input_ids'].to(device),
-                        'attention_mask': batch['negative_attention_mask'].to(device)}
+            input_batch = {'input_ids': batch['input_ids'].to(device),
+                           'attention_mask': batch['attention_mask'].to(device)}
+            labels = batch['labels'].to(device)
+            embeddings = model(**input_batch)
 
-            anchor_emb = model(**anchor)
-            positive_emb = model(**positive)
-            negative_emb = model(**negative)
-
-            loss = loss_fn(anchor_emb, positive_emb, negative_emb)
+            loss = loss_fn(embeddings, labels)
 
             loss.backward()
             optimizer.step()
@@ -220,19 +214,13 @@ def train_embeddings(model,
         model.eval()
         val_loss = 0
         for batch in tqdm(test_dataloader, desc='Validation', leave=False):
-            anchor = {'input_ids': batch['anchor_input_ids'].to(device),
-                      'attention_mask': batch['anchor_attention_mask'].to(device)}
-            positive = {'input_ids': batch['positive_input_ids'].to(device),
-                        'attention_mask': batch['positive_attention_mask'].to(device)}
-            negative = {'input_ids': batch['negative_input_ids'].to(device),
-                        'attention_mask': batch['negative_attention_mask'].to(device)}
-
+            input_batch = {'input_ids': batch['input_ids'].to(device),
+                                'attention_mask': batch['attention_mask'].to(device)}
+            labels = batch['labels'].to(device)
             with torch.no_grad():
-                anchor_emb = model(**anchor)
-                positive_emb = model(**positive)
-                negative_emb = model(**negative)
+                embeddings = model(**input_batch)
 
-            loss = loss_fn(anchor_emb, positive_emb, negative_emb)
+            loss = loss_fn(embeddings, labels)
             val_loss += loss.item()
 
         train_loss, val_loss = train_loss / len(train_dataloader), val_loss / len(test_dataloader)
@@ -259,8 +247,8 @@ def setup_embedding_train(save_dir,
                                              f' Available: {AVAILABLE_SSL_LOSSES.keys()}'
     device = torch.device(device_type)
     model = _get_peft_model(peft_type, model_name).to(device)
-    ssl_dataset = _compose_self_supervised_dataset(model.tokenizer, model_max_tokens, num_authors)
-    ssl_loss = AVAILABLE_SSL_LOSSES[ssl_loss](distance_function=lambda x, y: 1.0 - F.cosine_similarity(x, y))
+    ssl_dataset = _compose_dataset(model.tokenizer, model_max_tokens, num_authors)
+    ssl_loss = AVAILABLE_SSL_LOSSES[ssl_loss]()
 
     train_embeddings(model, ssl_dataset, ssl_loss, num_ssl_epochs, save_dir, train_batch_size,
                      eval_batch_size, learning_rate, weight_decay)
@@ -292,7 +280,7 @@ def setup_classifier_train(num_classes,
         os.makedirs(save_dir)
     device = torch.device(device_type)
     model = _get_peft_model(peft_type, model_name).to(device)
-    classification_dataset = _compose_classification_dataset(model.tokenizer, model_max_tokens, num_classes)
+    classification_dataset = _compose_dataset(model.tokenizer, model_max_tokens, num_classes)
     logger.info('Classification dataset created')
     cls_loss = AngularPenaltySMLoss(in_features=model.embedding_dim,
                                     out_features=num_classes, loss_type=cls_loss).to(device)
@@ -302,9 +290,9 @@ def setup_classifier_train(num_classes,
     logger.info('Classification task training has finished, moving to APN training')
 
     ssl_loss = AVAILABLE_SSL_LOSSES[ssl_loss](distance_function=lambda x, y: 1.0 - F.cosine_similarity(x, y))
-    ssl_dataset = _compose_self_supervised_dataset(model.tokenizer, model_max_tokens, num_ssl_authors)
+    ssl_dataset = _compose_dataset(model.tokenizer, model_max_tokens, num_classes)
 
-    train_embeddings(model, ssl_dataset, ssl_loss, model.tokenizer, num_ssl_epochs, save_dir, train_batch_size,
+    train_embeddings(model, ssl_dataset, ssl_loss, num_ssl_epochs, save_dir, train_batch_size,
                      eval_batch_size, learning_rate, weight_decay)
     logger.info('Training has finished')
 
