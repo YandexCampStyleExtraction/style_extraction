@@ -89,7 +89,9 @@ def train_classifier(model,
     test_dataloader = DataLoader(tokenized_dataset['test'], batch_size=eval_batch_size,
                                  collate_fn=data_collator, drop_last=True, pin_memory=True)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    optimizer = torch.optim.AdamW([
+        {'params': model.parameters()},
+        {'params': loss_fn.parameters()}], lr=learning_rate, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs * len(train_dataloader))
     best_val_loss = float('inf')
 
@@ -137,9 +139,46 @@ def train_classifier(model,
             logger.info(f'Best model (classifier and encoder) saved at {save_dir}')
 
 
-def train_embeddings(model, dataset, loss, epochs, device):
-    temperature = torch.tensor([0.08], requires_grad=True, device=device)
-    # in train loop: torch.nn.utils.clip_grad_norm_(temperature, 1.0)
+def train_embeddings(model,
+                     tokenized_dataset,
+                     loss_fn,
+                     tokenizer,
+                     epochs,
+                     save_dir,
+                     train_batch_size,
+                     eval_batch_size,
+                     learning_rate,
+                     weight_decay):
+    device = next(model.parameters()).device
+
+    train_dataloader = None
+    test_dataloader = None
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs * len(train_dataloader))
+    best_val_loss = float('inf')
+
+    for epoch in tqdm(range(epochs)):
+        train_loss = 0
+
+        for batch in train_dataloader:
+            batch = batch.to(device)
+            anchor = {'input_ids': batch['anchor_input_ids'], 'attention_mask': batch['anchor_attention_mask']}
+            positive = {'input_ids': batch['positive_input_ids'], 'attention_mask': batch['positive_attention_mask']}
+            negative = {'input_ids': batch['negative_input_ids'], 'attention_mask': batch['negative_attention_mask']}
+
+            anchor_emb = model(anchor)
+            positive_emb = model(positive)
+            negative_emb = model(negative)
+
+            loss = loss_fn(anchor_emb, positive_emb, negative_emb)
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+
+            train_loss += loss.item()
+
+        val_loss = 0
 
 
 def setup_embedding_train(ssl_loss,
@@ -175,13 +214,14 @@ def setup_classifier_train(num_classes,
     model = _get_peft_model(peft_type, model_name).to(device)
     classification_dataset = _compose_classification_dataset(model.tokenizer, model_max_tokens, num_classes)
     logger.info('Classification dataset created')
-    cls_loss = AngularPenaltySMLoss(in_features=model.embedding_dim, out_features=num_classes, loss_type=cls_loss)
+    cls_loss = AngularPenaltySMLoss(in_features=model.embedding_dim,
+                                    out_features=num_classes, loss_type=cls_loss).to(device)
 
     train_classifier(model, classification_dataset, cls_loss, model.tokenizer, num_cls_epochs, save_dir,
                      train_batch_size, eval_batch_size, learning_rate, gradient_accumulation_steps, weight_decay)
 
-    # ssl_dataset = _compose_self_supervised_dataset()
-    # train_embeddings(model, ssl_dataset, ssl_loss, num_ssl_epochs, device)
+    ssl_dataset = _compose_self_supervised_dataset()
+    train_embeddings(model, ssl_dataset, ssl_loss, num_ssl_epochs, device)
 
 
 if __name__ == '__main__':

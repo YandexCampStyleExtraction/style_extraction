@@ -30,7 +30,7 @@ AVAILABLE_PEFT = {
 }
 
 AVAILABLE_SSL_LOSSES = {
-    'contrastive': ContrastiveLoss,
+    # 'contrastive': ContrastiveLoss,
     'triplet': TripletMarginWithDistanceLoss
 }
 
