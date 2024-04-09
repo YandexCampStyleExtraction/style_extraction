@@ -4,19 +4,19 @@ from models.losses import ContrastiveLoss, TripletMarginLoss
 
 AVAILABLE_PEFT = {
     'lora': LoraConfig(
-        r=8,
+        r=14,
         lora_alpha=32,
         lora_dropout=0.1,
         bias='none',
         target_modules=['query', 'value'],
     ),
     'adalora': AdaLoraConfig(
-        target_r=8,
-        init_r=12,
+        target_r=14,
+        init_r=20,
         lora_alpha=32,
         lora_dropout=0.1,
         bias='none',
-        target_modules=['query', 'query'],
+        target_modules=['query', 'value'],
     ),
     'ia3': IA3Config(
         target_modules=['query', 'value', 'output'],

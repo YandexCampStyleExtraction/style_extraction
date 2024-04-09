@@ -4,6 +4,7 @@ import random
 import sys
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -11,6 +12,7 @@ from datasets import Dataset, DatasetDict
 from fire import Fire
 from loguru import logger
 from peft import get_peft_model
+from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from transformers import DataCollatorWithPadding, DefaultDataCollator
@@ -51,55 +53,24 @@ def _compose_dataset(tokenizer, model_max_tokens, num_classes):
         model_inputs['labels'] = examples['labels']
         return model_inputs
 
-    input_texts = [np.random.choice(["This is an example text", "This is another example text"]) for _ in range(1024)]
-    labels = np.random.randint(0, 10, size=1024)
-    dataset_dict = {"text": input_texts, "labels": labels}
+    df = pd.read_csv('data/books.csv').dropna()
+    unique_labels = df['author_id'].unique()
+    if len(unique_labels) > num_classes:
+        # Randomly sample the unique labels
+        sampled_labels = np.random.choice(unique_labels, size=num_classes, replace=False)
+        df = df[df['label'].isin(sampled_labels)]
 
+    train_text, test_text, train_labels, test_labels = train_test_split(df['text'].to_list(), df['author_id'].to_list(),
+                                                                        test_size=0.15, random_state=0)
     dataset = DatasetDict()
-    dataset['train'] = Dataset.from_dict(dataset_dict)
-    dataset['test'] = Dataset.from_dict(dataset_dict)
+    dataset['train'] = Dataset.from_dict({"text": train_text, "labels": train_labels})
+    dataset['test'] = Dataset.from_dict({"text": test_text, "labels": test_labels})
 
     tokenized_dataset = dataset.map(preprocess_function,
                                     batched=True,
                                     desc='Tokenizing dataset',
                                     remove_columns=['text'])
     return tokenized_dataset
-
-
-# def _compose_self_supervised_dataset(tokenizer, model_max_tokens, num_authors):
-#     # This is just a sample for sanity checks, reformat
-#     def preprocess_function(examples):
-#         model_inputs = dict()
-#         anchors = tokenizer(examples['anchor'], max_length=model_max_tokens, padding='max_length', truncation=True)
-#         positives = tokenizer(examples['positive'], max_length=model_max_tokens, padding='max_length', truncation=True)
-#         negatives = tokenizer(examples['negative'], max_length=model_max_tokens, padding='max_length', truncation=True)
-#
-#         model_inputs['anchor_input_ids'] = anchors['input_ids']
-#         model_inputs['anchor_attention_mask'] = anchors['attention_mask']
-#
-#         model_inputs['positive_input_ids'] = positives['input_ids']
-#         model_inputs['positive_attention_mask'] = positives['attention_mask']
-#
-#         model_inputs['negative_input_ids'] = negatives['input_ids']
-#         model_inputs['negative_attention_mask'] = negatives['attention_mask']
-#
-#         return model_inputs
-#
-#     anchor = ["Here at index I should be a text by some author" for _ in range(1024)]
-#     positive = ["Here at index I should be a text by the same author as in anchor[i]" for _ in range(1024)]
-#     negative = ["Here at index I should be a text by author != author of anchor[i]" for _ in range(1024)]
-#
-#     dataset_dict = {"anchor": anchor, "positive": positive, "negative": negative}
-#
-#     dataset = DatasetDict()
-#     dataset['train'] = Dataset.from_dict(dataset_dict)
-#     dataset['test'] = Dataset.from_dict(dataset_dict)
-#
-#     tokenized_dataset = dataset.map(preprocess_function,
-#                                     batched=True,
-#                                     desc='Tokenizing dataset',
-#                                     remove_columns=['anchor', 'positive', 'negative'])
-#     return tokenized_dataset
 
 
 def train_classifier(model,
