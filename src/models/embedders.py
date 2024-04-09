@@ -21,32 +21,10 @@ class EmbeddingModel(nn.Module):
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
-
-    def forward(self, **input_batch):
-        outputs = self.model(**input_batch)
-        embeddings = average_pool(outputs.last_hidden_state, input_batch['attention_mask'])
-        embeddings = F.normalize(embeddings, p=2, dim=1)
-        return embeddings
-
-
-class ClassifierBased(nn.Module):
-    def __init__(self, model_name, num_classes, dropout_p=0.2):
-        super().__init__()
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        self.model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
-        input_dim = MODEL_TO_DIM[model_name.split('-')[-1]]
-        classifier_neurons = [input_dim, 1024, 2048, 1024, num_classes]
-        self.classifier = nn.Sequential(*[
-            nn.Sequential(
-                nn.Linear(classifier_neurons[i - 1], classifier_neurons[i]),
-                nn.BatchNorm1d(classifier_neurons[i]),
-                nn.ReLU(),
-                nn.Dropout(dropout_p)
-            ) for i in range(1, len(classifier_neurons))])
+        self.embedding_dim = MODEL_TO_DIM[model_name.split('-')[-1]]
 
     def forward(self, **input_batch):
         embeddings = self.model(input_ids=input_batch['input_ids'], attention_mask=input_batch['attention_mask'])
         embeddings = average_pool(embeddings.last_hidden_state, input_batch['attention_mask'])
         embeddings = F.normalize(embeddings, p=2, dim=1)
-        pred = self.classifier(embeddings)
-        return pred
+        return embeddings

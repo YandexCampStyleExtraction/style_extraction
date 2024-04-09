@@ -1,6 +1,6 @@
 from peft import LoraConfig, IA3Config, AdaLoraConfig, PromptTuningConfig
-from models.losses import ArcFace, AngularPenaltySMLoss, ContrastiveLoss, TripletMarginWithDistanceLoss
 
+from models.losses import ContrastiveLoss, TripletMarginWithDistanceLoss
 
 AVAILABLE_PEFT = {
     'lora': LoraConfig(
@@ -30,8 +30,12 @@ AVAILABLE_PEFT = {
 }
 
 AVAILABLE_SSL_LOSSES = {
-    'arcface': ArcFace,
-    'angular': AngularPenaltySMLoss,
     'contrastive': ContrastiveLoss,
     'triplet': TripletMarginWithDistanceLoss
+}
+
+AVAILABLE_CLS_LOSSES = {
+    'arcface',
+    'sphereface',
+    'cosface',
 }

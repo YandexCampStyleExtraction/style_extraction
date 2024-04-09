@@ -4,7 +4,6 @@ import random
 import sys
 
 
-import evaluate
 import numpy as np
 import torch
 import torch.nn as nn
@@ -14,16 +13,16 @@ from tqdm.auto import tqdm
 from loguru import logger
 from peft import get_peft_model
 from torch.utils.data import DataLoader
-from transformers import DataCollator, DataCollatorWithPadding
+from transformers import DataCollatorWithPadding
 
-from fixtures import AVAILABLE_PEFT
+from fixtures import AVAILABLE_PEFT, AVAILABLE_CLS_LOSSES
 
 
-def _get_peft_model(peft_type: str, model_name: str, is_classifier: bool, **kwargs) -> nn.Module:
+def _get_peft_model(peft_type: str, model_name: str) -> nn.Module:
     assert peft_type in AVAILABLE_PEFT or peft_type == 'none', \
         f'Not supported PEFT method {peft_type}. Available: {AVAILABLE_PEFT.keys()}'
     # The parameters setting would probably be much more good-looking if placed in .yaml or something
-    base_model = (ClassifierBased if is_classifier else EmbeddingModel)(model_name, **kwargs)
+    base_model = EmbeddingModel(model_name)
 
     if peft_type == 'prompt':
         logger.warning('Prompt tuning provides very few trainable parameters.'
@@ -73,6 +72,7 @@ def _compose_self_supervised_dataset():
 
 def train_classifier(model,
                      tokenized_dataset,
+                     loss_fn,
                      tokenizer,
                      epochs,
                      save_dir,
@@ -91,7 +91,6 @@ def train_classifier(model,
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs * len(train_dataloader))
-    loss_fn = nn.CrossEntropyLoss()
     best_val_loss = float('inf')
 
     logger.info('Training started')
@@ -128,8 +127,8 @@ def train_classifier(model,
             val_loss += loss.item()
         val_loss /= len(test_dataloader)
         accuracy = correctly_classified / (len(test_dataloader) * eval_batch_size)
-        logger.info(f'Epoch={epoch+1}/{epochs} | Train loss = {train_loss: .6f} |'
-                    f' Val loss = {val_loss: .6f} | Val accuracy = {accuracy: .6f}')
+        logger.info(f'Epoch={epoch+1}/{epochs} | Train loss = {train_loss:.6f} |'
+                    f' Val loss = {val_loss:.6f} | Val accuracy = {accuracy:.6f}')
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -158,6 +157,7 @@ def setup_classifier_train(num_classes,
                            save_dir,
                            num_cls_epochs,
                            num_ssl_epochs,
+                           cls_loss='arcface',
                            ssl_loss='triplet',
                            model_max_tokens=512,
                            peft_type='adalora',
@@ -172,14 +172,16 @@ def setup_classifier_train(num_classes,
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     device = torch.device(device_type)
-    model = _get_peft_model(peft_type, model_name, is_classifier=True, num_classes=num_classes).to(device)
+    model = _get_peft_model(peft_type, model_name).to(device)
     classification_dataset = _compose_classification_dataset(model.tokenizer, model_max_tokens, num_classes)
     logger.info('Classification dataset created')
-    train_classifier(model, classification_dataset, model.tokenizer, num_cls_epochs, save_dir, train_batch_size,
-                     eval_batch_size, learning_rate, gradient_accumulation_steps, weight_decay)
+    cls_loss = AngularPenaltySMLoss(in_features=model.embedding_dim, out_features=num_classes, loss_type=cls_loss)
 
-    ssl_dataset = _compose_self_supervised_dataset()
-    train_embeddings(model, ssl_dataset, ssl_loss, num_ssl_epochs, device)
+    train_classifier(model, classification_dataset, cls_loss, model.tokenizer, num_cls_epochs, save_dir,
+                     train_batch_size, eval_batch_size, learning_rate, gradient_accumulation_steps, weight_decay)
+
+    # ssl_dataset = _compose_self_supervised_dataset()
+    # train_embeddings(model, ssl_dataset, ssl_loss, num_ssl_epochs, device)
 
 
 if __name__ == '__main__':
@@ -187,7 +189,8 @@ if __name__ == '__main__':
     torch.manual_seed(0)
     random.seed(0)
 
-    from src.models.embedders import EmbeddingModel, ClassifierBased
+    from src.models.embedders import EmbeddingModel
+    from src.models.losses import AngularPenaltySMLoss
 
     logger.info('Creating the experiment')
     Fire({
