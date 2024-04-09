@@ -3,24 +3,24 @@ import os
 import random
 import sys
 
-
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from datasets import Dataset, DatasetDict
 from fire import Fire
-from tqdm.auto import tqdm
 from loguru import logger
 from peft import get_peft_model
 from torch.utils.data import DataLoader
-from transformers import DataCollatorWithPadding
+from tqdm.auto import tqdm
+from transformers import DataCollatorWithPadding, DefaultDataCollator
 
-from fixtures import AVAILABLE_PEFT, AVAILABLE_CLS_LOSSES
+from fixtures import AVAILABLE_PEFT, AVAILABLE_CLS_LOSSES, AVAILABLE_SSL_LOSSES
 
 
 def _get_peft_model(peft_type: str, model_name: str) -> nn.Module:
     assert peft_type in AVAILABLE_PEFT or peft_type == 'none', \
-        f'Not supported PEFT method {peft_type}. Available: {AVAILABLE_PEFT.keys()}'
+        f'Not supported PEFT method {peft_type}. Available: {AVAILABLE_PEFT.keys()} and "none"'
     # The parameters setting would probably be much more good-looking if placed in .yaml or something
     base_model = EmbeddingModel(model_name)
 
@@ -66,8 +66,40 @@ def _compose_classification_dataset(tokenizer, model_max_tokens, num_classes):
     return tokenized_dataset
 
 
-def _compose_self_supervised_dataset():
-    return None
+def _compose_self_supervised_dataset(tokenizer, model_max_tokens, num_authors):
+    # This is just a sample for sanity checks, reformat
+    def preprocess_function(examples):
+        model_inputs = dict()
+        anchors = tokenizer(examples['anchor'], max_length=model_max_tokens, padding='max_length', truncation=True)
+        positives = tokenizer(examples['positive'], max_length=model_max_tokens, padding='max_length', truncation=True)
+        negatives = tokenizer(examples['negative'], max_length=model_max_tokens, padding='max_length', truncation=True)
+
+        model_inputs['anchor_input_ids'] = anchors['input_ids']
+        model_inputs['anchor_attention_mask'] = anchors['attention_mask']
+
+        model_inputs['positive_input_ids'] = positives['input_ids']
+        model_inputs['positive_attention_mask'] = positives['attention_mask']
+
+        model_inputs['negative_input_ids'] = negatives['input_ids']
+        model_inputs['negative_attention_mask'] = negatives['attention_mask']
+
+        return model_inputs
+
+    anchor = ["Here at index I should be a text by some author" for _ in range(1024)]
+    positive = ["Here at index I should be a text by the same author as in anchor[i]" for _ in range(1024)]
+    negative = ["Here at index I should be a text by author != author of anchor[i]" for _ in range(1024)]
+
+    dataset_dict = {"anchor": anchor, "positive": positive, "negative": negative}
+
+    dataset = DatasetDict()
+    dataset['train'] = Dataset.from_dict(dataset_dict)
+    dataset['test'] = Dataset.from_dict(dataset_dict)
+
+    tokenized_dataset = dataset.map(preprocess_function,
+                                    batched=True,
+                                    desc='Tokenizing dataset',
+                                    remove_columns=['anchor', 'positive', 'negative'])
+    return tokenized_dataset
 
 
 def train_classifier(model,
@@ -129,14 +161,13 @@ def train_classifier(model,
             val_loss += loss.item()
         val_loss /= len(test_dataloader)
         accuracy = correctly_classified / (len(test_dataloader) * eval_batch_size)
-        logger.info(f'Epoch={epoch+1}/{epochs} | Train loss = {train_loss:.6f} |'
+        logger.info(f'Epoch={epoch + 1}/{epochs} | Train loss = {train_loss:.6f} |'
                     f' Val loss = {val_loss:.6f} | Val accuracy = {accuracy:.6f}')
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             model.model.save_pretrained(os.path.join(save_dir, 'peft_encoder_weights'))
-            torch.save(model.classifier.state_dict(), os.path.join(save_dir, 'classifier.pth'))
-            logger.info(f'Best model (classifier and encoder) saved at {save_dir}')
+            logger.info(f'Best model params saved at {save_dir}')
 
 
 def train_embeddings(model,
@@ -151,51 +182,98 @@ def train_embeddings(model,
                      weight_decay):
     device = next(model.parameters()).device
 
-    train_dataloader = None
-    test_dataloader = None
+    data_collator = DefaultDataCollator() # DataCollatorWithPadding(tokenizer=tokenizer)
+
+    train_dataloader = DataLoader(tokenized_dataset['train'], batch_size=train_batch_size,
+                                  collate_fn=data_collator, drop_last=True, pin_memory=True)
+    test_dataloader = DataLoader(tokenized_dataset['test'], batch_size=eval_batch_size,
+                                 collate_fn=data_collator, drop_last=True, pin_memory=True)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs * len(train_dataloader))
     best_val_loss = float('inf')
 
     for epoch in tqdm(range(epochs)):
+        model.train()
         train_loss = 0
 
-        for batch in train_dataloader:
-            batch = batch.to(device)
-            anchor = {'input_ids': batch['anchor_input_ids'], 'attention_mask': batch['anchor_attention_mask']}
-            positive = {'input_ids': batch['positive_input_ids'], 'attention_mask': batch['positive_attention_mask']}
-            negative = {'input_ids': batch['negative_input_ids'], 'attention_mask': batch['negative_attention_mask']}
+        for batch in tqdm(train_dataloader, desc='Training', leave=False):
+            anchor = {'input_ids': batch['anchor_input_ids'].to(device),
+                      'attention_mask': batch['anchor_attention_mask'].to(device)}
+            positive = {'input_ids': batch['positive_input_ids'].to(device),
+                        'attention_mask': batch['positive_attention_mask'].to(device)}
+            negative = {'input_ids': batch['negative_input_ids'].to(device),
+                        'attention_mask': batch['negative_attention_mask'].to(device)}
 
-            anchor_emb = model(anchor)
-            positive_emb = model(positive)
-            negative_emb = model(negative)
+            anchor_emb = model(**anchor)
+            positive_emb = model(**positive)
+            negative_emb = model(**negative)
 
             loss = loss_fn(anchor_emb, positive_emb, negative_emb)
+
             loss.backward()
             optimizer.step()
+            scheduler.step()
             optimizer.zero_grad()
 
             train_loss += loss.item()
 
+        model.eval()
         val_loss = 0
+        for batch in tqdm(test_dataloader, desc='Validation', leave=False):
+            anchor = {'input_ids': batch['anchor_input_ids'].to(device),
+                      'attention_mask': batch['anchor_attention_mask'].to(device)}
+            positive = {'input_ids': batch['positive_input_ids'].to(device),
+                        'attention_mask': batch['positive_attention_mask'].to(device)}
+            negative = {'input_ids': batch['negative_input_ids'].to(device),
+                        'attention_mask': batch['negative_attention_mask'].to(device)}
+
+            with torch.no_grad():
+                anchor_emb = model(**anchor)
+                positive_emb = model(**positive)
+                negative_emb = model(**negative)
+
+            loss = loss_fn(anchor_emb, positive_emb, negative_emb)
+            val_loss += loss.item()
+
+        train_loss, val_loss = train_loss / len(train_dataloader), val_loss / len(test_dataloader)
+        logger.info(f'Epoch {epoch + 1}/{epochs} | Train loss: {train_loss:.6f} Val loss: {val_loss:.6f}')
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            model.model.save_pretrained(os.path.join(save_dir, 'peft_encoder_weights'))
+            logger.info(f'Best model params saved at {save_dir}')
 
 
-def setup_embedding_train(ssl_loss,
+
+def setup_embedding_train(save_dir,
                           num_ssl_epochs,
+                          num_authors=1000,
+                          ssl_loss='triplet',
+                          model_max_tokens=512,
                           peft_type='adalora',
                           model_name='intfloat/multilingual-e5-base',
-                          device_type='cuda:0'):
+                          device_type='cuda:0',
+                          train_batch_size: int = 8,
+                          eval_batch_size: int = 8,
+                          learning_rate=3e-5,
+                          weight_decay=0.01, ):
+    assert ssl_loss in AVAILABLE_SSL_LOSSES, f'Not supported contrastive loss {ssl_loss}.' \
+                                             f' Available: {AVAILABLE_SSL_LOSSES.keys()}'
     device = torch.device(device_type)
-    model = _get_peft_model(peft_type, model_name, is_classifier=False).to(device)
-    ssl_dataset = _compose_self_supervised_dataset()
-    train_embeddings(model, ssl_dataset, ssl_loss, num_ssl_epochs, device)
+    model = _get_peft_model(peft_type, model_name).to(device)
+    ssl_dataset = _compose_self_supervised_dataset(model.tokenizer, model_max_tokens, num_authors)
+    ssl_loss = AVAILABLE_SSL_LOSSES[ssl_loss](distance_function=lambda x, y: 1.0 - F.cosine_similarity(x, y))
+
+    train_embeddings(model, ssl_dataset, ssl_loss, model.tokenizer, num_ssl_epochs, save_dir, train_batch_size,
+                     eval_batch_size, learning_rate, weight_decay)
+    logger.info('Training has finished')
 
 
 def setup_classifier_train(num_classes,
                            save_dir,
                            num_cls_epochs,
                            num_ssl_epochs,
+                           num_ssl_authors=1000,
                            cls_loss='arcface',
                            ssl_loss='triplet',
                            model_max_tokens=512,
@@ -208,6 +286,10 @@ def setup_classifier_train(num_classes,
                            gradient_accumulation_steps=4,
                            weight_decay=0.01,
                            ):
+    assert ssl_loss in AVAILABLE_SSL_LOSSES, f'Not supported contrastive loss {ssl_loss}.' \
+                                             f' Available: {AVAILABLE_SSL_LOSSES.keys()}'
+    assert cls_loss in AVAILABLE_CLS_LOSSES, f'Not supported classification loss {cls_loss}. ' \
+                                             f'Available: {AVAILABLE_CLS_LOSSES.keys()}'
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     device = torch.device(device_type)
@@ -219,9 +301,14 @@ def setup_classifier_train(num_classes,
 
     train_classifier(model, classification_dataset, cls_loss, model.tokenizer, num_cls_epochs, save_dir,
                      train_batch_size, eval_batch_size, learning_rate, gradient_accumulation_steps, weight_decay)
+    logger.info('Classification task training has finished, moving to APN training')
 
-    ssl_dataset = _compose_self_supervised_dataset()
-    train_embeddings(model, ssl_dataset, ssl_loss, num_ssl_epochs, device)
+    ssl_loss = AVAILABLE_SSL_LOSSES[ssl_loss](distance_function=lambda x, y: 1.0 - F.cosine_similarity(x, y))
+    ssl_dataset = _compose_self_supervised_dataset(model.tokenizer, model_max_tokens, num_ssl_authors)
+
+    train_embeddings(model, ssl_dataset, ssl_loss, model.tokenizer, num_ssl_epochs, save_dir, train_batch_size,
+                     eval_batch_size, learning_rate, weight_decay)
+    logger.info('Training has finished')
 
 
 if __name__ == '__main__':
