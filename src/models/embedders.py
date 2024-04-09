@@ -1,7 +1,13 @@
-import torch.functional as F
 import torch.nn as nn
+import torch.nn.functional as F
 from torch import Tensor
 from transformers import AutoTokenizer, AutoModel
+
+MODEL_TO_DIM = {
+    'small': 384,
+    'base': 768,
+    'large': 1024
+}
 
 
 def average_pool(last_hidden_states: Tensor,
@@ -11,22 +17,36 @@ def average_pool(last_hidden_states: Tensor,
 
 
 class EmbeddingModel(nn.Module):
-    def __init__(self, model_name='intfloat/multilingual-e5-large', device='cuda:0', *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModel.from_pretrained(model_name).to(device)
+    def __init__(self, model_name):
+        super().__init__()
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        self.model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
 
-    def forward(self, input_batch):
-        # input_batch = tokenizer(input_texts, max_length=512, padding=True, truncation=True, return_tensors='pt')
-
+    def forward(self, **input_batch):
         outputs = self.model(**input_batch)
         embeddings = average_pool(outputs.last_hidden_state, input_batch['attention_mask'])
-
-        # normalize embeddings
         embeddings = F.normalize(embeddings, p=2, dim=1)
-        scores = (embeddings[:2] @ embeddings[2:].T) * 100
-        return scores
+        return embeddings
 
 
-class ClassifierBased(EmbeddingModel):
-    pass
+class ClassifierBased(nn.Module):
+    def __init__(self, model_name, num_classes, dropout_p=0.2):
+        super().__init__()
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        self.model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
+        input_dim = MODEL_TO_DIM[model_name.split('-')[-1]]
+        classifier_neurons = [input_dim, 1024, 2048, 1024, num_classes]
+        self.classifier = nn.Sequential(*[
+            nn.Sequential(
+                nn.Linear(classifier_neurons[i - 1], classifier_neurons[i]),
+                nn.BatchNorm1d(classifier_neurons[i]),
+                nn.ReLU(),
+                nn.Dropout(dropout_p)
+            ) for i in range(1, len(classifier_neurons))])
+
+    def forward(self, **input_batch):
+        embeddings = self.model(input_ids=input_batch['input_ids'], attention_mask=input_batch['attention_mask'])
+        embeddings = average_pool(embeddings.last_hidden_state, input_batch['attention_mask'])
+        embeddings = F.normalize(embeddings, p=2, dim=1)
+        pred = self.classifier(embeddings)
+        return pred

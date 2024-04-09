@@ -1,5 +1,3 @@
-# https://colab.research.google.com/drive/1FObv_7kot3X-F3Cf7RTGWAd28SEbzAM7#scrollTo=7z-hUC-OGRac
-
 from typing import Union
 
 import torch
