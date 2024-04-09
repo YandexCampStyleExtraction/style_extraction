@@ -1,7 +1,13 @@
-import torch.functional as F
 import torch.nn as nn
+import torch.nn.functional as F
 from torch import Tensor
 from transformers import AutoTokenizer, AutoModel
+
+MODEL_TO_DIM = {
+    'small': 384,
+    'base': 768,
+    'large': 1024
+}
 
 
 def average_pool(last_hidden_states: Tensor,
@@ -11,22 +17,14 @@ def average_pool(last_hidden_states: Tensor,
 
 
 class EmbeddingModel(nn.Module):
-    def __init__(self, model_name='intfloat/multilingual-e5-large', device='cuda:0', *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModel.from_pretrained(model_name).to(device)
+    def __init__(self, model_name):
+        super().__init__()
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        self.model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
+        self.embedding_dim = MODEL_TO_DIM[model_name.split('-')[-1]]
 
-    def forward(self, input_batch):
-        # input_batch = tokenizer(input_texts, max_length=512, padding=True, truncation=True, return_tensors='pt')
-
-        outputs = self.model(**input_batch)
-        embeddings = average_pool(outputs.last_hidden_state, input_batch['attention_mask'])
-
-        # normalize embeddings
+    def forward(self, **input_batch):
+        embeddings = self.model(input_ids=input_batch['input_ids'], attention_mask=input_batch['attention_mask'])
+        embeddings = average_pool(embeddings.last_hidden_state, input_batch['attention_mask'])
         embeddings = F.normalize(embeddings, p=2, dim=1)
-        scores = (embeddings[:2] @ embeddings[2:].T) * 100
-        return scores
-
-
-class ClassifierBased(EmbeddingModel):
-    pass
+        return embeddings

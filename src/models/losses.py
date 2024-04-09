@@ -1,12 +1,9 @@
-# https://colab.research.google.com/drive/1FObv_7kot3X-F3Cf7RTGWAd28SEbzAM7#scrollTo=7z-hUC-OGRac
-
 from typing import Union
 
 import torch
 import torch.nn as nn
 from torch.nn import TripletMarginWithDistanceLoss
 import torch.nn.functional as F
-import math
 
 
 class ContrastiveLoss(nn.Module):
@@ -17,35 +14,6 @@ class ContrastiveLoss(nn.Module):
 
     def forward(self, predicted_sim, gt_sim, T: Union[float, nn.Parameter] = 0.08):
         return self.H(predicted_sim / T, gt_sim)
-
-
-class ArcFace(torch.nn.Module):
-    """ ArcFace
-    # https://arxiv.org/pdf/1801.07698.pdf
-    # https://github.com/deepinsight/insightface
-    """
-    def __init__(self, s=64.0, margin=0.5):
-        super(ArcFace, self).__init__()
-        self.s = s
-        self.margin = margin
-        self.cos_m = math.cos(margin)
-        self.sin_m = math.sin(margin)
-        self.theta = math.cos(math.pi - margin)
-        self.sinmm = math.sin(math.pi - margin) * margin
-        self.easy_margin = False
-
-    def forward(self, logits: torch.Tensor, labels: torch.Tensor):
-        index = torch.where(labels != -1)[0]
-        target_logit = logits[index, labels[index].view(-1)]
-
-        with torch.no_grad():
-            target_logit.arccos_()
-            logits.arccos_()
-            final_target_logit = target_logit + self.margin
-            logits[index, labels[index].view(-1)] = final_target_logit
-            logits.cos_()
-        logits = logits * self.s
-        return logits
 
 
 # https://arxiv.org/pdf/1901.05903.pdf
@@ -93,7 +61,7 @@ class AngularPenaltySMLoss(nn.Module):
         assert torch.max(labels) < self.out_features
 
         for W in self.fc.parameters():
-            W = F.normalize(W, p=2, dim=1)
+            W.data = F.normalize(W, p=2, dim=1)
 
         x = F.normalize(x, p=2, dim=1)
 
