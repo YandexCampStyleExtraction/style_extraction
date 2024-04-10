@@ -71,6 +71,7 @@ def _setup_save_dir(save_dir):
                                 f'{now.year}-{now.month}-{now.day}-{now.hour}-{now.minute}-{now.second}')
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
+    return save_dir
 
 
 def _compose_dataset(tokenizer, model_max_tokens, max_classes=None):
@@ -166,7 +167,7 @@ def train_classifier(model,
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            model.model.save_pretrained(os.path.join(save_dir, 'peft_encoder_weights'))
+            model.model.save_pretrained(str(os.path.join(save_dir, 'peft_encoder_weights')))
             logger.info(f'Best model params saved at {save_dir}')
 
 
@@ -228,7 +229,8 @@ def train_embeddings(model,
         wandb.log({"training_loss": train_loss, "validation_loss": val_loss}, step=epoch)
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            model.model.save_pretrained(os.path.join(save_dir, 'peft_encoder_weights'))
+            path = os.path.join(save_dir, 'peft_encoder_weights/')
+            model.model.save_pretrained(str(path))
             logger.info(f'Best model params saved at {save_dir}')
 
 
@@ -249,7 +251,7 @@ def setup_embedding_train(num_ssl_epochs,
                           weight_decay=0.01, ):
     assert ssl_loss in AVAILABLE_SSL_LOSSES, f'Not supported contrastive loss {ssl_loss}.' \
                                              f' Available: {AVAILABLE_SSL_LOSSES.keys()}'
-    _setup_save_dir(save_dir)
+    save_dir = _setup_save_dir(save_dir)
     device = torch.device(device_type)
     model = _get_peft_model(target_r, init_r, lora_alpha, lora_dropout, model_name).to(device)
     ssl_dataset = _compose_dataset(model.tokenizer, model_max_tokens, num_authors)
@@ -283,7 +285,7 @@ def setup_classifier_train(num_authors,
                                              f' Available: {AVAILABLE_SSL_LOSSES.keys()}'
     assert cls_loss in AVAILABLE_CLS_LOSSES, f'Not supported classification loss {cls_loss}. ' \
                                              f'Available: {AVAILABLE_CLS_LOSSES.keys()}'
-    _setup_save_dir(save_dir)
+    save_dir = _setup_save_dir(save_dir)
     device = torch.device(device_type)
     model = _get_peft_model(target_r, init_r, lora_alpha, lora_dropout, model_name).to(device)
     classification_dataset = _compose_dataset(model.tokenizer, model_max_tokens, num_authors)
