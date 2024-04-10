@@ -13,11 +13,11 @@ import wandb
 from datasets import Dataset, DatasetDict
 from fire import Fire
 from loguru import logger
-from peft import get_peft_model, AdaLoraConfig, PeftModel
+from peft import get_peft_model, AdaLoraConfig, PeftModel, PeftConfig
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
-from transformers import DataCollatorWithPadding, DefaultDataCollator
+from transformers import DataCollatorWithPadding, DefaultDataCollator, AutoModel
 
 from fixtures import AVAILABLE_CLS_LOSSES, AVAILABLE_SSL_LOSSES
 
@@ -160,7 +160,7 @@ def train_classifier(model,
             with torch.inference_mode():
                 pred = model(**batch)
                 loss = loss_fn(pred, labels)
-                pred = loss_fn.fc(pred)
+                pred = loss_fn.fc(pred)  # ArcFace has a trainable projection
             correctly_classified += (pred.argmax(dim=-1) == labels).sum().item()
             val_loss += loss.item()
 
@@ -169,8 +169,8 @@ def train_classifier(model,
         logger.info(f'Epoch={epoch + 1}/{epochs} | Train loss = {train_loss:.6f} |'
                     f' Val loss = {val_loss:.6f} | Val accuracy = {accuracy:.6f}')
         # Maybe do the logging over batches?
-        wandb.log({"training_loss": train_loss, "validation_loss": val_loss,
-                   "validation_accuracy": accuracy}, step=epoch)
+        wandb.log({"cls_training_loss": train_loss, "cls_validation_loss": val_loss,
+                   "cls_validation_accuracy": accuracy}, step=epoch)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -186,9 +186,8 @@ def train_embeddings(model,
                      train_batch_size,
                      eval_batch_size,
                      learning_rate,
-                     weight_decay):
-    device = next(model.parameters()).device
-
+                     weight_decay,
+                     device):
     data_collator = DefaultDataCollator()
 
     train_dataloader = DataLoader(tokenized_dataset['train'], batch_size=train_batch_size,
@@ -233,7 +232,7 @@ def train_embeddings(model,
 
         train_loss, val_loss = train_loss / len(train_dataloader), val_loss / len(val_dataloader)
         logger.info(f'Epoch {epoch + 1}/{epochs} | Train loss: {train_loss:.6f} Val loss: {val_loss:.6f}')
-        wandb.log({"training_loss": train_loss, "validation_loss": val_loss}, step=epoch)
+        wandb.log({"cl_training_loss": train_loss, "cl_validation_loss": val_loss}, step=epoch)
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             path = os.path.join(save_dir, 'peft_encoder_weights/')
@@ -265,7 +264,7 @@ def setup_embedding_train(num_ssl_epochs,
     ssl_loss = AVAILABLE_SSL_LOSSES[ssl_loss]()
 
     train_embeddings(model, ssl_dataset, ssl_loss, num_ssl_epochs, save_dir, train_batch_size,
-                     eval_batch_size, learning_rate, weight_decay)
+                     eval_batch_size, learning_rate, weight_decay, device)
     logger.info('Training has finished')
 
 
@@ -303,14 +302,19 @@ def setup_classifier_train(num_cls_epochs,
     train_classifier(model, classification_dataset, cls_loss, model.tokenizer, num_cls_epochs, save_dir,
                      train_batch_size, eval_batch_size, learning_rate, gradient_accumulation_steps, weight_decay)
     logger.info('Classification task training has finished, moving to APN training')
-    model.model = PeftModel.from_pretrained(model, str(os.path.join(save_dir, 'peft_encoder_weights')))
+
+    tuned_ckpt_path = str(os.path.join(save_dir, 'peft_encoder_weights'))
+    config = PeftConfig.from_pretrained(tuned_ckpt_path)
+    model.model = AutoModel.from_pretrained(config.base_model_name_or_path, device_map={"": 0}, trust_remote_code=True)
+    model.model = PeftModel.from_pretrained(model.model, tuned_ckpt_path, is_trainable=True)
     logger.info('Loaded weights of best model from classification stage')
 
-    ssl_loss = AVAILABLE_SSL_LOSSES[ssl_loss](distance_function=lambda x, y: 1.0 - F.cosine_similarity(x, y))
+    ssl_loss = AVAILABLE_SSL_LOSSES[ssl_loss]()
+    logger.info('Creating the dataset for contrastive learning')
     ssl_dataset = _compose_dataset(model.tokenizer, model_max_tokens, max_classes=None)
 
     train_embeddings(model, ssl_dataset, ssl_loss, num_ssl_epochs, save_dir, train_batch_size,
-                     eval_batch_size, learning_rate, weight_decay)
+                     eval_batch_size, learning_rate, weight_decay, device)
     logger.info('Training has finished')
 
 
