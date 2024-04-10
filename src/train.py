@@ -13,7 +13,7 @@ import wandb
 from datasets import Dataset, DatasetDict
 from fire import Fire
 from loguru import logger
-from peft import get_peft_model, AdaLoraConfig
+from peft import get_peft_model, AdaLoraConfig, PeftModel
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
@@ -57,6 +57,8 @@ def _prepare_train_test_split(max_classes):
         # Randomly sample the unique labels
         sampled_labels = np.random.choice(unique_labels, size=max_classes, replace=False)
         raw_df = raw_df[raw_df['author_id'].isin(sampled_labels)]
+        label2idx = {label: i for i, label in enumerate(sampled_labels)}
+        raw_df['author_id'] = raw_df['author_id'].map(lambda x: label2idx[x])
 
     train_df, test_df = train_test_split(raw_df, test_size=0.2, random_state=0)
     val_df, test_df = train_test_split(test_df, test_size=0.5, random_state=0)
@@ -86,6 +88,9 @@ def _compose_dataset(tokenizer, model_max_tokens, max_classes=None):
     train_df = pd.read_csv(os.path.join(DATA_PATH, 'train.csv')).dropna()
     val_df = pd.read_csv(os.path.join(DATA_PATH, 'val.csv')).dropna()
     test_df = pd.read_csv(os.path.join(DATA_PATH, 'test.csv')).dropna()
+    logger.info(f'Train data len: {len(train_df)} | Validation data len: {len(val_df)} | Test data len: {len(test_df)}')
+    for stage in STAGES:
+        os.remove(os.path.join(DATA_PATH, f'{stage}.csv'))
 
     train_text, train_labels = train_df['text'].to_list(), train_df['author_id'].to_list()
     val_text, val_labels = val_df['text'].to_list(), val_df['author_id'].to_list()
@@ -149,14 +154,16 @@ def train_classifier(model,
             gc.collect()
         val_loss = 0
         correctly_classified = 0
-        for i, batch in tqdm(enumerate(val_dataloader), total=len(train_dataloader), leave=False, desc='Validating'):
+        for i, batch in tqdm(enumerate(val_dataloader), total=len(val_dataloader), leave=False, desc='Validating'):
             batch = batch.to(device)
             labels = batch.pop('labels')
             with torch.inference_mode():
                 pred = model(**batch)
-            loss = loss_fn(pred, labels)
+                loss = loss_fn(pred, labels)
+                pred = loss_fn.fc(pred)
             correctly_classified += (pred.argmax(dim=-1) == labels).sum().item()
             val_loss += loss.item()
+
         val_loss /= len(val_dataloader)
         accuracy = correctly_classified / (len(val_dataloader) * eval_batch_size)
         logger.info(f'Epoch={epoch + 1}/{epochs} | Train loss = {train_loss:.6f} |'
@@ -187,7 +194,7 @@ def train_embeddings(model,
     train_dataloader = DataLoader(tokenized_dataset['train'], batch_size=train_batch_size,
                                   collate_fn=data_collator, drop_last=True, pin_memory=True)
     val_dataloader = DataLoader(tokenized_dataset['val'], batch_size=eval_batch_size,
-                                 collate_fn=data_collator, drop_last=True, pin_memory=True)
+                                collate_fn=data_collator, drop_last=True, pin_memory=True)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs * len(train_dataloader))
@@ -262,10 +269,10 @@ def setup_embedding_train(num_ssl_epochs,
     logger.info('Training has finished')
 
 
-def setup_classifier_train(num_authors,
-                           num_cls_epochs,
+def setup_classifier_train(num_cls_epochs,
                            num_ssl_epochs,
                            save_dir=None,
+                           num_authors=100,
                            cls_loss='arcface',
                            ssl_loss='triplet',
                            model_max_tokens=512,
@@ -296,8 +303,8 @@ def setup_classifier_train(num_authors,
     train_classifier(model, classification_dataset, cls_loss, model.tokenizer, num_cls_epochs, save_dir,
                      train_batch_size, eval_batch_size, learning_rate, gradient_accumulation_steps, weight_decay)
     logger.info('Classification task training has finished, moving to APN training')
-    for stage in STAGES:
-        os.remove(os.path.join(DATA_PATH, f'{stage}.csv'))
+    model.model = PeftModel.from_pretrained(model, str(os.path.join(save_dir, 'peft_encoder_weights')))
+    logger.info('Loaded weights of best model from classification stage')
 
     ssl_loss = AVAILABLE_SSL_LOSSES[ssl_loss](distance_function=lambda x, y: 1.0 - F.cosine_similarity(x, y))
     ssl_dataset = _compose_dataset(model.tokenizer, model_max_tokens, max_classes=None)
