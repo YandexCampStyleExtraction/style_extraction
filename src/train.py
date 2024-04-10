@@ -56,7 +56,7 @@ def _prepare_train_test_split(max_classes):
     if max_classes is not None and len(unique_labels) > max_classes:
         # Randomly sample the unique labels
         sampled_labels = np.random.choice(unique_labels, size=max_classes, replace=False)
-        df = raw_df[raw_df['label'].isin(sampled_labels)]
+        raw_df = raw_df[raw_df['author_id'].isin(sampled_labels)]
 
     train_df, test_df = train_test_split(raw_df, test_size=0.2, random_state=0)
     val_df, test_df = train_test_split(test_df, test_size=0.5, random_state=0)
