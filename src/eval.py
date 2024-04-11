@@ -9,10 +9,12 @@ import numpy as np
 import pandas as pd
 import torch
 from peft import get_peft_model, AdaLoraConfig, PeftModel, PeftConfig
+from torch.utils.data import DataLoader
 from datetime import datetime
 from datasets import Dataset, DatasetDict
 from sklearn.model_selection import train_test_split
 from transformers import DataCollatorWithPadding, DefaultDataCollator, AutoModel
+from tqdm import tqdm
 
 DATA_PATH = 'data/'
 ROOT_SAVE_PATH = 'output/'
@@ -22,28 +24,20 @@ STAGES = ['train', 'val', 'test']
 
 def get_metrics(model, dataloader, device):
     embeddings = []
-    labels = []
-    for i, batch in enumerate(dataloader):
+    y_true = []
+    for batch in tqdm(dataloader, desc='Eval'):
         input_batch = {'input_ids': batch['input_ids'].to(device),
                        'attention_mask': batch['attention_mask'].to(device)}
         labels = batch['labels'].to(device)
 
         embeddings.append(model(**input_batch).cpu().detach().numpy())
-        labels.extend(labels.cpu().detach().tolist())
+        y_true.extend(labels.cpu().detach().tolist())
 
-    print(embeddings[:5])
-    print(labels[:5])
     embeddings = np.vstack(embeddings)
-    labels = np.array(labels)
+    y_true = np.array(y_true)
 
     # tpr_at_fpr
-    fprs = [0.5, 0.2, 0.01]
-    for fpr in fprs:
-        logger.info(f"TPR@FPR={fpr}: {metrics.tpr_at_fpr(labels, embeddings, fpr)}")
-
-    similarities = [None, 'jeffreys', 'jensen-shannon']
-    for similarity in similarities:
-        logger.info(f"kl_div: {metrics.kl_div(labels, embeddings, similarity)}")
+    metrics.eval_metrics(y_true, embeddings, verbose=True)
 
 
 def _prepare_train_test_split(max_classes):
@@ -90,11 +84,11 @@ def _compose_dataset(tokenizer, model_max_tokens, max_classes=None):
 
     train_text, train_labels = train_df['text'].to_list(), train_df['author_id'].to_list()
     val_text, val_labels = val_df['text'].to_list(), val_df['author_id'].to_list()
-    test_text, test_labels = test_df['text'].to_list(), test_df['author_id'].to_list(),
+    test_text, test_labels = test_df['text'].to_list()[:1024], test_df['author_id'].to_list()[:1024],
 
     dataset = DatasetDict()
-    dataset['train'] = Dataset.from_dict({"text": train_text, "labels": train_labels})
-    dataset['val'] = Dataset.from_dict({"text": val_text, "labels": val_labels})
+    # dataset['train'] = Dataset.from_dict({"text": train_text, "labels": train_labels})
+    # dataset['val'] = Dataset.from_dict({"text": val_text, "labels": val_labels})
     dataset['test'] = Dataset.from_dict({"text": test_text, "labels": test_labels})
 
     tokenized_dataset = dataset.map(preprocess_function, batched=True, desc='Tokenizing data', remove_columns=['text'])
@@ -112,10 +106,12 @@ def main(checkpoint_path, model_name="intfloat/multilingual-e5-base", device_typ
     model.model = PeftModel.from_pretrained(model.model, tuned_ckpt_path, is_trainable=True)
     logger.info(f'Loaded weights of {checkpoint_path=}')
 
-    eval_dataset = _compose_dataset(model.tokenizer, 512, max_classes=None)['test']
-    get_metrics(model, eval_dataset, device)
+    eval_dataset = _compose_dataset(model.tokenizer, 512, max_classes=None)
+    test_dataloader = DataLoader(eval_dataset['test'], batch_size=16,
+                                  collate_fn=DefaultDataCollator(), drop_last=True, pin_memory=True)
+    get_metrics(model, test_dataloader, device)
 
-if __name__ == 'main':
+if __name__ == '__main__':
     sys.path.append(os.getcwd())
     torch.manual_seed(0)
     random.seed(0)
