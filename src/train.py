@@ -189,7 +189,7 @@ def train_classifier(model,
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
     device = next(model.parameters()).device
     train_dataloader = DataLoader(tokenized_dataset['train'], batch_size=train_batch_size,
-                                  collate_fn=data_collator, drop_last=True, pin_memory=True)
+                                  collate_fn=data_collator, drop_last=True, pin_memory=True, shuffle=True)
     val_dataloader = DataLoader(tokenized_dataset['val'], batch_size=eval_batch_size,
                                 collate_fn=data_collator, drop_last=True, pin_memory=True)
 
@@ -260,7 +260,7 @@ def train_embeddings(model,
     data_collator = DefaultDataCollator()
 
     train_dataloader = DataLoader(tokenized_dataset['train'], batch_size=train_batch_size,
-                                  collate_fn=data_collator, drop_last=True, pin_memory=True)
+                                  collate_fn=data_collator, drop_last=True, pin_memory=True, shuffle=True)
     val_dataloader = DataLoader(tokenized_dataset['val'], batch_size=eval_batch_size,
                                 collate_fn=data_collator, drop_last=True, pin_memory=True)
 
