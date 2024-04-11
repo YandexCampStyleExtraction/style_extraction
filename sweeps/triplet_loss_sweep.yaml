@@ -1,19 +1,20 @@
 program: src/train.py
-name: optimize_adalora_hparams
+name: optimize_triplet
 method: bayes
 metric:
   goal: minimize
   name: cl_validation_loss
 parameters:
   learning_rate:
-    min: 0.0001
+    min: 0.00001
     max: 0.01
-  target_r:
-    values: [12, 14, 16]
-  init_r:
-    values: [18, 21, 24]
+  weight_decay:
+    min: 0.00002
+    max: 0.05
   num_ssl_epochs:
-    values: [5, 10, 15]
+    value: 2
+  num_triplets:
+    value: 0.05
 
 command:
 - ${env}

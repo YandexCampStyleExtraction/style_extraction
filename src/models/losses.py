@@ -7,12 +7,30 @@ import torch.nn.functional as F
 
 class ContrastiveLoss(nn.Module):
 
-    def __init__(self, smooth=0.0):
+    def __init__(self):
         super().__init__()
-        self.H = torch.nn.CrossEntropyLoss(label_smoothing=smooth, reduction='mean')
 
-    def forward(self, predicted_sim, gt_sim, T: Union[float, nn.Parameter] = 0.08):
-        return self.H(predicted_sim / T, gt_sim)
+    def forward(self, anchor, positive, negative, temperature: Union[float, nn.Parameter] = 0.08):
+        """
+        Compute the contrastive loss.
+
+        Args:
+            anchor (torch.Tensor): The anchor embeddings, shape (batch_size, embedding_dim).
+            positive (torch.Tensor): The positive embeddings, shape (batch_size, embedding_dim).
+            negative (torch.Tensor): The negative embeddings, shape (batch_size, embedding_dim).
+            temperature (float): The temperature parameter for the softmax. Default is 0.08.
+
+        Returns:
+            torch.Tensor: The contrastive loss, a single scalar value.
+        """
+        # Compute the similarity matrix
+        sim_matrix = torch.exp(torch.mm(anchor, positive.t()) / temperature)
+
+        denominator = sim_matrix.sum(dim=1) + torch.exp(torch.mm(anchor, negative.t()) / temperature).sum(dim=1)
+
+        loss = -torch.log(sim_matrix.diag() / denominator)
+
+        return loss.mean()
 
 
 # https://arxiv.org/pdf/1901.05903.pdf
