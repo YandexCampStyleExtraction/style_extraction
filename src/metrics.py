@@ -41,7 +41,6 @@ def kl_div(same_similarities, false_similarities, symmetry=None):
 
 def tpr_at_fpr(same_similarities, false_similarities, fpr=0.01) -> float:
     threshold_similarity = np.quantile(false_similarities, q=1-fpr)
-    print(threshold_similarity)
     tpr = sum(same_similarities >= threshold_similarity) / len(same_similarities)
     return tpr
 

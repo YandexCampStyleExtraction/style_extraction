@@ -82,9 +82,9 @@ def _compose_dataset(tokenizer, model_max_tokens, max_classes=None):
     for stage in STAGES:
         os.remove(os.path.join(DATA_PATH, f'{stage}.csv'))
 
-    train_text, train_labels = train_df['text'].to_list(), train_df['author_id'].to_list()
-    val_text, val_labels = val_df['text'].to_list(), val_df['author_id'].to_list()
-    test_text, test_labels = test_df['text'].to_list()[:10240], test_df['author_id'].to_list()[:10240],
+    # train_text, train_labels = train_df['text'].to_list(), train_df['author_id'].to_list()
+    # val_text, val_labels = val_df['text'].to_list(), val_df['author_id'].to_list()
+    test_text, test_labels = test_df['text'].to_list(), test_df['author_id'].to_list(),
 
     dataset = DatasetDict()
     # dataset['train'] = Dataset.from_dict({"text": train_text, "labels": train_labels})
