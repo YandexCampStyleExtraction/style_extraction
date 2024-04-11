@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import wandb
 from datasets import Dataset, DatasetDict
 from fire import Fire
@@ -105,6 +104,76 @@ def _compose_dataset(tokenizer, model_max_tokens, max_classes=None):
     return tokenized_dataset
 
 
+def _compose_apn_dataset(tokenizer, model_max_tokens, num_triplets=None):
+    def preprocess_function(examples):
+        model_inputs = dict()
+        anchors = tokenizer(examples['anchor'], max_length=model_max_tokens, padding='max_length', truncation=True)
+        positives = tokenizer(examples['positive'], max_length=model_max_tokens, padding='max_length', truncation=True)
+        negatives = tokenizer(examples['negative'], max_length=model_max_tokens, padding='max_length', truncation=True)
+
+        model_inputs['anchor_input_ids'] = anchors['input_ids']
+        model_inputs['anchor_attention_mask'] = anchors['attention_mask']
+
+        model_inputs['positive_input_ids'] = positives['input_ids']
+        model_inputs['positive_attention_mask'] = positives['attention_mask']
+
+        model_inputs['negative_input_ids'] = negatives['input_ids']
+        model_inputs['negative_attention_mask'] = negatives['attention_mask']
+
+        return model_inputs
+
+    df = pd.read_csv(RAW_DATA_PATH).dropna()
+    if num_triplets is None:
+        num_triplets = len(df)
+    elif type(num_triplets) is float:
+        num_triplets = int(len(df) * num_triplets)
+
+    unique_author_ids = df['author_id'].unique()
+    # Pre-filter the DataFrame to get the indices for each author
+    author_indices = {author_id: df[df['author_id'] == author_id].index.tolist() for author_id in unique_author_ids}
+
+    anchor = []
+    positive = []
+    negative = []
+    for _ in tqdm(range(num_triplets), desc='Generating triplets'):
+        # Randomly select an author_id
+        random_author_id = np.random.choice(unique_author_ids)
+        random_author_indices = author_indices[random_author_id]
+
+        # Select the anchor text
+        anchor_idx = random_author_indices[np.random.randint(len(random_author_indices))]
+        anchor.append(df.loc[anchor_idx, 'text'])
+
+        # Select the positive text (different from anchor)
+        positive_idx = random_author_indices[np.random.randint(len(random_author_indices))]
+        while positive_idx == anchor_idx:
+            positive_idx = random_author_indices[np.random.randint(len(random_author_indices))]
+        positive.append(df.loc[positive_idx, 'text'])
+
+        # Select the negative text (from a random different author)
+        random_negative_author_id = np.random.choice([idx for idx in unique_author_ids if idx != random_author_id])
+        random_negative_author_indices = author_indices[random_negative_author_id]
+        negative_idx = random_negative_author_indices[np.random.randint(len(random_negative_author_indices))]
+        negative.append(df.loc[negative_idx, 'text'])
+
+    train_anchor, val_anchor, train_positive, val_positive, train_negative, val_negative = \
+        train_test_split(anchor, positive, negative, test_size=0.2, random_state=0)
+    val_anchor, test_anchor, val_positive, test_positive, val_negative, test_negative = \
+        train_test_split(val_anchor, val_positive, val_negative, test_size=0.5, random_state=0)
+
+    dataset = DatasetDict()
+    dataset['train'] = Dataset.from_dict(
+        {"anchor": train_anchor, "positive": train_positive, "negative": train_negative})
+    dataset['test'] = Dataset.from_dict({"anchor": test_anchor, "positive": test_positive, "negative": test_negative})
+    dataset['val'] = Dataset.from_dict({"anchor": val_anchor, "positive": val_positive, "negative": val_negative})
+
+    tokenized_dataset = dataset.map(preprocess_function,
+                                    batched=True,
+                                    desc='Tokenizing dataset',
+                                    remove_columns=['anchor', 'positive', 'negative'])
+    return tokenized_dataset
+
+
 def train_classifier(model,
                      tokenized_dataset,
                      loss_fn,
@@ -122,7 +191,7 @@ def train_classifier(model,
     train_dataloader = DataLoader(tokenized_dataset['train'], batch_size=train_batch_size,
                                   collate_fn=data_collator, drop_last=True, pin_memory=True)
     val_dataloader = DataLoader(tokenized_dataset['val'], batch_size=eval_batch_size,
-                                 collate_fn=data_collator, drop_last=True, pin_memory=True)
+                                collate_fn=data_collator, drop_last=True, pin_memory=True)
 
     optimizer = torch.optim.AdamW([
         {'params': model.parameters()},
@@ -204,12 +273,18 @@ def train_embeddings(model,
         train_loss = 0
 
         for batch in tqdm(train_dataloader, desc='Training', leave=False):
-            input_batch = {'input_ids': batch['input_ids'].to(device),
-                           'attention_mask': batch['attention_mask'].to(device)}
-            labels = batch['labels'].to(device)
-            embeddings = model(**input_batch)
+            anchor = {'input_ids': batch['anchor_input_ids'].to(device),
+                      'attention_mask': batch['anchor_attention_mask'].to(device)}
+            positive = {'input_ids': batch['positive_input_ids'].to(device),
+                        'attention_mask': batch['positive_attention_mask'].to(device)}
+            negative = {'input_ids': batch['negative_input_ids'].to(device),
+                        'attention_mask': batch['negative_attention_mask'].to(device)}
 
-            loss = loss_fn(embeddings, labels)
+            anchor_emb = model(**anchor)
+            positive_emb = model(**positive)
+            negative_emb = model(**negative)
+
+            loss = loss_fn(anchor_emb, positive_emb, negative_emb)
 
             loss.backward()
             optimizer.step()
@@ -221,13 +296,19 @@ def train_embeddings(model,
         model.eval()
         val_loss = 0
         for batch in tqdm(val_dataloader, desc='Validation', leave=False):
-            input_batch = {'input_ids': batch['input_ids'].to(device),
-                           'attention_mask': batch['attention_mask'].to(device)}
-            labels = batch['labels'].to(device)
-            with torch.no_grad():
-                embeddings = model(**input_batch)
+            anchor = {'input_ids': batch['anchor_input_ids'].to(device),
+                      'attention_mask': batch['anchor_attention_mask'].to(device)}
+            positive = {'input_ids': batch['positive_input_ids'].to(device),
+                        'attention_mask': batch['positive_attention_mask'].to(device)}
+            negative = {'input_ids': batch['negative_input_ids'].to(device),
+                        'attention_mask': batch['negative_attention_mask'].to(device)}
 
-            loss = loss_fn(embeddings, labels)
+            with torch.no_grad():
+                anchor_emb = model(**anchor)
+                positive_emb = model(**positive)
+                negative_emb = model(**negative)
+
+            loss = loss_fn(anchor_emb, positive_emb, negative_emb)
             val_loss += loss.item()
 
         train_loss, val_loss = train_loss / len(train_dataloader), val_loss / len(val_dataloader)
@@ -241,8 +322,8 @@ def train_embeddings(model,
 
 
 def setup_embedding_train(num_ssl_epochs,
-                          num_authors=1000,
                           save_dir=None,
+                          num_triplets=None,  # Number of triplets will be equal to the size of the dataset
                           ssl_loss='triplet',
                           model_max_tokens=512,
                           target_r=14,
@@ -260,7 +341,7 @@ def setup_embedding_train(num_ssl_epochs,
     save_dir = _setup_save_dir(save_dir)
     device = torch.device(device_type)
     model = _get_peft_model(target_r, init_r, lora_alpha, lora_dropout, model_name).to(device)
-    ssl_dataset = _compose_dataset(model.tokenizer, model_max_tokens, num_authors)
+    ssl_dataset = _compose_apn_dataset(model.tokenizer, model_max_tokens, num_triplets)
     ssl_loss = AVAILABLE_SSL_LOSSES[ssl_loss]()
 
     train_embeddings(model, ssl_dataset, ssl_loss, num_ssl_epochs, save_dir, train_batch_size,
@@ -272,6 +353,7 @@ def setup_classifier_train(num_cls_epochs,
                            num_ssl_epochs,
                            save_dir=None,
                            num_authors=100,
+                           num_triplets=None,  # Number of triplets will be equal to the size of the dataset
                            cls_loss='arcface',
                            ssl_loss='triplet',
                            model_max_tokens=512,
@@ -311,7 +393,7 @@ def setup_classifier_train(num_cls_epochs,
 
     ssl_loss = AVAILABLE_SSL_LOSSES[ssl_loss]()
     logger.info('Creating the dataset for contrastive learning')
-    ssl_dataset = _compose_dataset(model.tokenizer, model_max_tokens, max_classes=None)
+    ssl_dataset = _compose_apn_dataset(model.tokenizer, model_max_tokens, num_triplets)
 
     train_embeddings(model, ssl_dataset, ssl_loss, num_ssl_epochs, save_dir, train_batch_size,
                      eval_batch_size, learning_rate, weight_decay, device)

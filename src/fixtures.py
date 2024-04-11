@@ -1,8 +1,8 @@
-from models.losses import TripletMarginLoss
+from models.losses import TripletMarginLoss, ContrastiveLoss
 
 
 AVAILABLE_SSL_LOSSES = {
-    # 'contrastive': ContrastiveLoss,
+    'contrastive': ContrastiveLoss,
     'triplet': TripletMarginLoss
 }
 
