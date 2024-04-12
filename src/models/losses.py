@@ -23,13 +23,9 @@ class ContrastiveLoss(nn.Module):
         Returns:
             torch.Tensor: The contrastive loss, a single scalar value.
         """
-        # Compute the similarity matrix
         sim_matrix = torch.exp(torch.mm(anchor, positive.t()) / temperature)
-
         denominator = sim_matrix.sum(dim=1) + torch.exp(torch.mm(anchor, negative.t()) / temperature).sum(dim=1)
-
         loss = -torch.log(sim_matrix.diag() / denominator)
-
         return loss.mean()
 
 

@@ -1,5 +1,4 @@
 import os
-import os
 import random
 import sys
 
@@ -70,7 +69,6 @@ def save_embeddings_to_file(peft_checkpoint_path, target_path, data_path=None, b
     author2emb = sorted(list(author2emb), key=lambda x: x[0])
     author2emb = np.array([x[1] for x in author2emb])
     np.savetxt(str(os.path.join(target_path, 'embeddings.txt')), author2emb)
-
 
 
 if __name__ == '__main__':

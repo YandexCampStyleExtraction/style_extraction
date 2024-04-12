@@ -10,3 +10,5 @@ torch==2.2.2
 tqdm
 transformers==4.39.1
 wandb==0.16.6
+streamlit==1.33.0
+streamlit-agraph==0.0.45

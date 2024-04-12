@@ -93,6 +93,7 @@ def plotting_graph():
 
     st.button("Re-run")
 
+
 st.set_page_config(page_title="Gabriel Graph Visualization", page_icon="📈")
 st.markdown("# Graph Visualization")
 st.sidebar.header("Graph Visualization")
