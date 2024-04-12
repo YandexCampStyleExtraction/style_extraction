@@ -98,7 +98,7 @@ st.set_page_config(page_title="Gabriel Graph Visualization", page_icon="📈")
 st.markdown("# Graph Visualization")
 st.sidebar.header("Graph Visualization")
 st.write(
-    """Some text... Bla Bla Bla..."""
+    """Gabriel graph visualization on authors styles embeddings"""
 )
 
 plotting_graph()

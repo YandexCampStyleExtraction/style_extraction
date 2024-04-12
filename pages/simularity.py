@@ -8,8 +8,8 @@ from src.models.embedders import EmbeddingModel
 
 
 @st.cache_data
-def load_embedder(peft_checkpoint_path='checkpoints/cls_5_contrastive_3_0_05', device_type='cuda:0'):
-    device = torch.device(device_type)
+def load_embedder(peft_checkpoint_path='checkpoints/cls_cosface_cl_contrastive', device_type='cuda:0'):
+    _device = torch.device(device_type)
     config = PeftConfig.from_pretrained(peft_checkpoint_path)
 
     model = EmbeddingModel(model_name=config.base_model_name_or_path)
@@ -17,7 +17,7 @@ def load_embedder(peft_checkpoint_path='checkpoints/cls_5_contrastive_3_0_05', d
     model.eval()
     model.to(device)
     logger.info('Model has been loaded')
-    return model, device
+    return model, _device
 
 
 @st.cache_resource
@@ -36,7 +36,7 @@ def compute_cosine_similarity(text1, text2):
 def calculating_similarity():
     # Inputs
     st.header("Text Input")
-    text1 = st.text_input("Enter Text 1", "Not a poem by William Shakespear")
+    text1 = st.text_input("Enter Text 1", "Not a poem by William Shakespeare")
     text2 = st.text_input("Enter Text 2", "Not a poem by anyone, actually")
 
     # Compute cosine similarity
@@ -49,7 +49,7 @@ st.set_page_config(page_title="Cosine Simularity Calculation", page_icon="🧮")
 st.markdown("# Cosine Simularity")
 st.sidebar.header("Cosine Simularity")
 st.write(
-    """Some text... Bla Bla Bla... 2"""
+    """Here you can calculate similarity between two texts styles"""
 )
 embedder, device = load_embedder()
 
