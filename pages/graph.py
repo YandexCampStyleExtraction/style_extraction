@@ -60,7 +60,7 @@ def plotting_graph():
         "date": author_years["year"]
     })
 
-    date_threshold = st.slider("Year Threshold", min_value=1700, max_value=2010, value=2010, step=10)
+    date_threshold = st.slider("Year Threshold", min_value=min(author_years['year']), max_value=max(author_years['year']), value=1800, step=10)
     num_points = st.slider("Number of points", min_value=10, max_value=100, value=30, step=5)
 
     # Filter data based on date threshold

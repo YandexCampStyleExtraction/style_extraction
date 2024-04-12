@@ -8,14 +8,14 @@ from src.models.embedders import EmbeddingModel
 
 
 @st.cache_data
-def load_embedder(peft_checkpoint_path='checkpoints/cls_cosface_cl_contrastive', device_type='cuda:0'):
-    _device = torch.device(device_type)
+def load_embedder(peft_checkpoint_path='checkpoints/cls_cosface_cl_contrastive'):
+    _device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     config = PeftConfig.from_pretrained(peft_checkpoint_path)
 
     model = EmbeddingModel(model_name=config.base_model_name_or_path)
     model.model = PeftModel.from_pretrained(model.model, peft_checkpoint_path, is_trainable=False)
     model.eval()
-    model.to(device)
+    model.to(_device)
     logger.info('Model has been loaded')
     return model, _device
 
